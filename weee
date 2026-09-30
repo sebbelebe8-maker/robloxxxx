@@ -1,0 +1,480 @@
+local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/Quenty/Rayfield/master/source/Modules/Loader.lua"))()
+
+-- ============================================================================
+-- GLOBAL STATE & CONFIG
+-- ============================================================================
+local Settings = {
+    Title = "Delta Hub | Rayfield",
+    SaveOptions = true,
+    Savebinds = true,
+    DefaultTheme = "Default",
+    KeySystem = false, -- Enable if you want a key system
+    KeySystemSave = true,
+    Discord = "delta-executor",
+    DiscordInvite = "https://discord.gg/delta",
+}
+
+local Window = Rayfield:CreateWindow(Settings)
+
+local Tabs = {
+    Player = Window:CreateTab("Player", "UserIcon"),
+    Combat = Window:CreateTab("Combat", "CrosshairIcon"),
+    Visuals = Window:CreateTab("Visuals", "EyeIcon"),
+    Utility = Window:CreateTab("Utility", "ToolsIcon"),
+    Settings = Window:CreateTab("Settings", "GearIcon"),
+}
+
+-- ============================================================================
+-- CORE HELPERS (Delta Optimized)
+-- ============================================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedFirst = getrenv()._G
+
+local Character = Players.LocalPlayer.Character
+local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+local Humanoid = Character and Character:FindFirstChild("Humanoid")
+local Camera = workspace.CurrentCamera
+
+-- Safe connection handler to prevent duplicate connections
+local Connections = {}
+local function ConnectSignal(signal, func)
+    local connection = signal:Connect(func)
+    table.insert(Connections, connection)
+    return connection
+end
+
+-- Disconnect all signals (used for cleanup or reset)
+local function DisconnectAll()
+    for _, conn in ipairs(Connections) do
+        if not conn:Disabled() then
+            conn:Disconnect()
+        end
+    end
+    table.clear(Connections)
+end
+
+-- ============================================================================
+-- TAB 1: PLAYER (Movement & Physical)
+-- ============================================================================
+local PlayerTab = Tabs.Player
+
+local MovementSection = PlayerTab:CreateSection("Movement")
+
+MovementSection:CreateSlider("WalkSpeed", {
+    Text = "Base walk speed",
+    Default = 16,
+    Min = 0,
+    Max = 200,
+    Increment = 0.5,
+    Callback = function(v)
+        if Humanoid then Humanoid.WalkSpeed = v end
+    end
+})
+
+MovementSection:CreateSlider("JumpPower", {
+    Text = "Jump force",
+    Default = 50,
+    Min = 0,
+    Max = 500,
+    Increment = 1,
+    Callback = function(v)
+        if Humanoid then Humanoid.JumpPower = v end
+    end
+})
+
+MovementSection:CreateSlider("Gravity", {
+    Text = "Gravity multiplier",
+    Default = 196.2,
+    Min = 0,
+    Max = 1000,
+    Increment = 1,
+    Callback = function(v)
+        -- Roblox uses 196.2 as default gravity
+        game:GetService("Workspace").Gravity = v
+    end
+})
+
+MovementSection:CreateToggle("NoClip", {
+    Text = "Disable collision",
+    Default = false,
+    Callback = function(v)
+        if Character then
+            for _, part in pairs(Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = not v
+                end
+            end
+        end
+    end
+})
+
+MovementSection:CreateToggle("Fly", {
+    Text = "Enable flight (WASD + Space/Shift)",
+    Default = false,
+    Callback = function(v)
+        if v then
+            if not Connections["Fly"] then
+                Connections["Fly"] = RunService.Heartbeat:Connect(function()
+                    if not Character or not Humanoid then return end
+                    if Humanoid.PlatformStand then
+                        Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+                    end
+                    local velocity = Vector3.new()
+                    local moveDir = Camera.CFrame.LookVector
+                    local rightDir = Camera.CFrame.RightVector
+                    local input = UserInputService:GetFocusedTextBox()
+                    local keys = {}
+                    if UserInputService:IsKeyDown(Enum.KeyCode.W) then keys["W"] = true end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.S) then keys["S"] = true end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.A) then keys["A"] = true end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.D) then keys["D"] = true end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then keys["Space"] = true end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then keys["Shift"] = true end
+                    
+                    if keys["W"] then velocity += moveDir * 50 end
+                    if keys["S"] then velocity -= moveDir * 50 end
+                    if keys["A"] then velocity -= rightDir * 50 end
+                    if keys["D"] then velocity += rightDir * 50 end
+                    if keys["Space"] then velocity += Vector3.new(0, 50, 0) end
+                    if keys["Shift"] then velocity -= Vector3.new(0, 50, 0) end
+                    
+                    RootPart.Velocity = velocity
+                end)
+            end
+        else
+            if Connections["Fly"] then
+                Connections["Fly"]:Disconnect()
+                Connections["Fly"] = nil
+            end
+        end
+    end
+})
+
+local PhysicalSection = PlayerTab:CreateSection("Physical")
+
+PhysicalSection:CreateToggle("Infinite Jump", {
+    Text = "Jump from any height",
+    Default = false,
+    Callback = function(v)
+        if v then
+            if not Connections["InfJump"] then
+                Connections["InfJump"] = UserInputService.JumpRequest:Connect(function()
+                    if Humanoid and Humanoid.FloorMaterial ~= Enum.Material.Air then
+                        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end)
+            end
+        else
+            if Connections["InfJump"] then
+                Connections["InfJump"]:Disconnect()
+                Connections["InfJump"] = nil
+            end
+        end
+    end
+})
+
+PhysicalSection:CreateToggle("Anti-AFK", {
+    Text = "Simulate movement to prevent kick",
+    Default = false,
+    Callback = function(v)
+        if v then
+            if not Connections["AntiAFK"] then
+                Connections["AntiAFK"] = RunService.Heartbeat:Connect(function()
+                    if not Character then return end
+                    local cframe = RootPart.CFrame
+                    RootPart.CFrame = cframe * CFrame.new(0, 0, 0.5)
+                    RootPart.CFrame = cframe
+                end)
+            end
+        else
+            if Connections["AntiAFK"] then
+                Connections["AntiAFK"]:Disconnect()
+                Connections["AntiAFK"] = nil
+            end
+        end
+    end
+})
+
+-- ============================================================================
+-- TAB 2: COMBAT (Damage & Targeting)
+-- ============================================================================
+local CombatTab = Tabs.Combat
+
+local CombatSection = CombatTab:CreateSection("Combat Mechanics")
+
+CombatSection:CreateSlider("Damage Multiplier", {
+    Text = "Multiply outgoing damage",
+    Default = 1,
+    Min = 0.1,
+    Max = 100,
+    Increment = 0.1,
+    Callback = function(v)
+        _G.DamageMultiplier = v
+    end
+})
+
+CombatSection:CreateToggle("Auto Aim", {
+    Text = "Snap camera to nearest enemy",
+    Default = false,
+    Callback = function(v)
+        if v then
+            if not Connections["AutoAim"] then
+                Connections["AutoAim"] = RunService.RenderStepped:Connect(function()
+                    local nearest = nil
+                    local nearestDist = 100 -- Max range
+                    for _, plr in pairs(Players:GetPlayers()) do
+                        if plr ~= Player and plr.Character and plr.Character:FindFirstChild("Head") then
+                            local head = plr.Character:FindFirstChild("Head")
+                            local dist = (Camera.CFrame.Position - head.Position).Magnitude
+                            if dist < nearestDist then
+                                nearest = head
+                                nearestDist = dist
+                            end
+                        end
+                    end
+                    if nearest then
+                        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, nearest.Position)
+                    end
+                end)
+            end
+        else
+            if Connections["AutoAim"] then
+                Connections["AutoAim"]:Disconnect()
+                Connections["AutoAim"] = nil
+            end
+        end
+    end
+})
+
+CombatSection:CreateToggle("Infinite Stamina", {
+    Text = "Prevent stamina drain",
+    Default = false,
+    Callback = function(v)
+        if v then
+            if not Connections["InfStam"] then
+                Connections["InfStam"] = RunService.Heartbeat:Connect(function()
+                    -- Generic stamina refill, adjust path for specific game
+                    local stamina = Character:FindFirstChild("Stamina")
+                    if stamina then
+                        stamina.Value = 100
+                    end
+                end)
+            end
+        else
+            if Connections["InfStam"] then
+                Connections["InfStam"]:Disconnect()
+                Connections["InfStam"] = nil
+            end
+        end
+    end
+})
+
+-- ============================================================================
+-- TAB 3: VISUALS (ESP & Lighting)
+-- ============================================================================
+local VisualsTab = Tabs.Visuals
+
+local VisualSection = VisualsTab:CreateSection("Player ESP")
+
+VisualSection:CreateToggle("Highlight Players", {
+    Text = "Show colored highlights on players",
+    Default = false,
+    Callback = function(v)
+        for _, plr in pairs(Players:GetPlayers()) do
+            if plr.Character then
+                local highlight = plr.Character:FindFirstChild("Highlight")
+                if v then
+                    if not highlight then
+                        local hl = Instance.new("Highlight")
+                        hl.Name = "Highlight"
+                        hl.FillColor = Color3.fromRGB(0, 255, 0)
+                        hl.FillTransparency = 0.5
+                        hl.OutlineColor = Color3.fromRGB(0, 255, 0)
+                        hl.OutlineTransparency = 0
+                        hl.Parent = plr.Character
+                    end
+                else
+                    if highlight then
+                        highlight:Destroy()
+                    end
+                end
+            end
+        end
+        -- Handle new players
+        if v and not Connections["NewPlayerESP"] then
+            Connections["NewPlayerESP"] = Players.PlayerAdded:Connect(function(plr)
+                plr.CharacterAdded:Connect(function(char)
+                    local hl = Instance.new("Highlight")
+                    hl.Name = "Highlight"
+                    hl.FillColor = Color3.fromRGB(0, 255, 0)
+                    hl.FillTransparency = 0.5
+                    hl.OutlineColor = Color3.fromRGB(0, 255, 0)
+                    hl.OutlineTransparency = 0
+                    hl.Parent = char
+                end)
+            end)
+        elseif not v and Connections["NewPlayerESP"] then
+            Connections["NewPlayerESP"]:Disconnect()
+            Connections["NewPlayerESP"] = nil
+        end
+    end
+})
+
+local LightingSection = VisualsTab:CreateSection("Lighting & Atmosphere")
+
+LightingSection:CreateSlider("Brightness", {
+    Text = "Exposure compensation",
+    Default = 0,
+    Min = -10,
+    Max = 10,
+    Increment = 0.1,
+    Callback = function(v)
+        Lighting.Brightness = v
+    end
+})
+
+LightingSection:CreateSlider("Fog", {
+    Text = "Fog density",
+    Default = 0,
+    Min = 0,
+    Max = 10,
+    Increment = 0.1,
+    Callback = function(v)
+        Lighting.FogEnd = 100000 / (v + 0.001) -- Inverse scale for density feel
+        Lighting.FogStart = 100000 / (v * 2 + 0.001)
+    end
+})
+
+LightingSection:CreateButton("Reset Lighting", {
+    Text = "Restore default lighting values",
+    Callback = function()
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+        Lighting.FogStart = 0
+        Lighting.GlobalShadows = true
+        Lighting.OutdoorAmbient = Color3.fromRGB(127, 127, 127)
+        print("Lighting reset to defaults.")
+    end
+})
+
+-- ============================================================================
+-- TAB 4: UTILITY (Quality & Tools)
+-- ============================================================================
+local UtilityTab = Tabs.Utility
+
+local QualitySection = UtilityTab:CreateSection("Graphics Quality")
+
+local function SetQuality(level)
+    local levels = {
+        [1] = { ShadowSoftness = 0.2, ShadowMaxDistance = 100, GlobalShadows = false },
+        [2] = { ShadowSoftness = 0.5, ShadowMaxDistance = 200, GlobalShadows = true },
+        [3] = { ShadowSoftness = 1, ShadowMaxDistance = 500, GlobalShadows = true },
+    }
+    local q = levels[level]
+    if q then
+        Lighting.ShadowSoftness = q.ShadowSoftness
+        Lighting.ShadowMaxDistance = q.ShadowMaxDistance
+        Lighting.GlobalShadows = q.GlobalShadows
+    end
+end
+
+QualitySection:CreateDropdown("Quality Level", {
+    Text = "Set global graphics quality",
+    Default = "Medium",
+    Values = {"Low", "Medium", "High"},
+    Callback = function(v)
+        local map = { Low = 1, Medium = 2, High = 3 }
+        SetQuality(map[v])
+    end
+})
+
+local ToolSection = UtilityTab:CreateSection("Tools")
+
+ToolSection:CreateButton("Teleport to Spawn", {
+    Text = "Move player to spawn location",
+    Callback = function()
+        if Character and Character:FindFirstChild("HumanoidRootPart") then
+            local spawn = workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("SpawnLocation_1")
+            if spawn then
+                RootPart.CFrame = spawn.CFrame + Vector3.new(0, 3, 0)
+            else
+                RootPart.CFrame = CFrame.new(0, 10, 0)
+            end
+        end
+    end
+})
+
+ToolSection:CreateButton("Clean Up Highlights", {
+    Text = "Remove all custom highlights",
+    Callback = function()
+        for _, plr in pairs(Players:GetPlayers()) do
+            if plr.Character then
+                local hl = plr.Character:FindFirstChild("Highlight")
+                if hl then hl:Destroy() end
+            end
+        end
+        print("Highlights cleaned.")
+    end
+})
+
+-- ============================================================================
+-- TAB 5: SETTINGS (Keybinds & Config)
+-- ============================================================================
+local SettingsTab = Tabs.Settings
+
+local KeybindSection = SettingsTab:CreateSection("Keybinds")
+
+KeybindSection:CreateKeybind("Toggle UI", {
+    Text = "Show/Hide this menu",
+    Default = "U",
+    Callback = function()
+        -- Rayfield handles this natively if you use the built-in toggle, 
+        -- but here is a manual implementation for custom logic
+        Window:Toggle()
+    end
+})
+
+KeybindSection:CreateKeybind("Sprint Toggle", {
+    Text = "Toggle sprint mode",
+    Default = "F",
+    Callback = function()
+        if Humanoid then
+            Humanoid.WalkSpeed = Humanoid.WalkSpeed > 16 and 16 or 32
+            print("Sprint: " .. (Humanoid.WalkSpeed > 16 and "ON" or "OFF"))
+        end
+    end
+})
+
+local ConfigSection = SettingsTab:CreateSection("Configuration")
+
+ConfigSection:CreateButton("Export Config", {
+    Text = "Copy current settings to clipboard",
+    Callback = function()
+        local config = {
+            WalkSpeed = Humanoid and Humanoid.WalkSpeed or 16,
+            JumpPower = Humanoid and Humanoid.JumpPower or 50,
+            Brightness = Lighting.Brightness,
+        }
+        setclipboard(game:GetService("HttpService"):JSONEncode(config))
+        print("Config copied to clipboard!")
+    end
+})
+
+ConfigSection:CreateButton("Reset All", {
+    Text = "Reset all cheats to default state",
+    Callback = function()
+        DisconnectAll()
+        if Humanoid then
+            Humanoid.WalkSpeed = 16
+            Humanoid.JumpPower = 50
+        end
+        Lighting.Brightness = 2
+        print("All settings reset.")
+    end
+})
+
+print("[Delta Hub] Rayfield Menu loaded successfully.")
